@@ -1,0 +1,90 @@
+# Multi-stage Azure DevOps pipeline: build -> test -> scan -> dev -> prod.
+#
+# Structure notes that matter more than the YAML:
+#
+#  * No credential appears anywhere. The service connection uses workload
+#    identity federation, so Azure DevOps exchanges a short-lived token rather
+#    than storing a secret. Application secrets come from Key Vault through a
+#    variable group, never from pipeline variables typed into the UI.
+#
+#  * Promotion to production is gated by an ENVIRONMENT, not by an `if`.
+#    Approvals and branch controls attach to the environment in Azure DevOps,
+#    which means the gate is auditable and cannot be bypassed by editing this
+#    file in a pull request.
+#
+#  * Stages are templates. A 400-line pipeline that nobody dares change is the
+#    normal failure mode; these are small enough to review.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - docs/**
+      - "**/*.md"
+
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  - name: pythonVersion
+    value: "3.11"
+  - name: imageName
+    value: sentiment-api
+  # Key Vault-backed. The pipeline references names; values never live here or
+  # in the pipeline UI. Rotating a secret changes nothing in this repository.
+  - group: sentiment-api-kv
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+  - stage: Build
+    displayName: Build and unit test
+    jobs:
+      - template: templates/build.yml
+        parameters:
+          pythonVersion: $(pythonVersion)
+
+  - stage: Security
+    displayName: Security scanning
+    dependsOn: Build
+    # Runs in parallel with nothing else on purpose: a failing scan should stop
+    # promotion, so it must complete before any deploy stage begins.
+    jobs:
+      - template: templates/security-scan.yml
+        parameters:
+          pythonVersion: $(pythonVersion)
+
+  - stage: DeployDev
+    displayName: Deploy to dev
+    dependsOn: Security
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - template: templates/deploy.yml
+        parameters:
+          environmentName: sentiment-dev
+          resourceGroup: sentiment-dev-rg
+          azureSubscription: sc-sentiment-dev
+          imageName: $(imageName)
+          minReplicas: 0
+
+  - stage: DeployProd
+    displayName: Deploy to production
+    dependsOn: DeployDev
+    condition: succeeded()
+    jobs:
+      - template: templates/deploy.yml
+        parameters:
+          # This environment carries a required approver in Azure DevOps.
+          # The gate lives in the environment, not in this file.
+          environmentName: sentiment-prod
+          resourceGroup: sentiment-prod-rg
+          azureSubscription: sc-sentiment-prod
+          imageName: $(imageName)
+          # Production keeps a warm replica: scale-to-zero is a cost decision
+          # that costs a cold start, which is the wrong trade in prod.
+          minReplicas: 1

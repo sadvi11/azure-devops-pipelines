@@ -1,0 +1,61 @@
+name: Validate pipelines
+
+# Azure Pipelines definitions cannot be executed here -- that needs an Azure
+# DevOps organisation. What CAN be verified is that they are structurally
+# sound and free of the security mistakes that matter, and that is what runs.
+#
+# The badge on this repository is a VALIDATION badge, not a deployment badge.
+# Saying so is more useful than implying a green run that never happened.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Structure and security checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pyyaml
+
+      - name: Real pipeline definitions must pass
+        run: python3 scripts/validate_pipelines.py
+
+      - name: The validator must still catch known-bad pipelines
+        run: |
+          set +e
+          python3 scripts/validate_pipelines.py tests/fixtures > /tmp/out.txt 2>&1
+          rc=$?
+          set -e
+          cat /tmp/out.txt
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::validator ACCEPTED a known-bad pipeline"; exit 1
+          fi
+          for expected in "hard-coded credential" "no environment:" "continueOnError" "echoes a secret"; do
+            grep -q "$expected" /tmp/out.txt || {
+              echo "::error::validator no longer detects '$expected'"; exit 1; }
+            echo "  detects: $expected"
+          done
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Pipeline validation"
+            echo ""
+            echo "Azure Pipelines YAML cannot execute on GitHub Actions. These checks verify"
+            echo "structure and security posture; they do **not** prove a green deployment."
+            echo ""
+            echo "| Direction | Expected |"
+            echo "|---|---|"
+            echo "| Real definitions | pass |"
+            echo "| \`tests/fixtures\` known-bad | **must be rejected** |"
+          } >> "$GITHUB_STEP_SUMMARY"

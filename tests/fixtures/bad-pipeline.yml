@@ -1,0 +1,19 @@
+# DELIBERATELY BAD. CI asserts the validator rejects this file.
+# Each problem is one the validator claims to catch.
+trigger: none
+
+variables:
+  # 1. hard-coded credential
+  clientSecret: "Xy8vQ2mNp4Lk9WdT3hRf"
+
+stages:
+  - stage: Deploy
+    jobs:
+      # 2. deployment job with no environment: -> no approval gate
+      - deployment: shipit
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                # 3. echoes a secret into the build log
+                - script: echo $(clientSecret)

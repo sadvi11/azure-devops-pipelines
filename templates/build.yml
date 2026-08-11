@@ -1,0 +1,44 @@
+# Build and unit test. Publishes the test results and the built image tag so
+# later stages consume an artifact rather than rebuilding -- rebuilding per
+# stage means production runs a different binary from the one you tested.
+parameters:
+  - name: pythonVersion
+    type: string
+    default: "3.11"
+
+jobs:
+  - job: build
+    displayName: Build and test
+    steps:
+      - template: steps/use-python.yml
+        parameters:
+          pythonVersion: ${{ parameters.pythonVersion }}
+
+      - script: |
+          set -euo pipefail
+          pip install -r app/requirements.txt pytest pytest-cov
+        displayName: Install dependencies
+
+      - script: |
+          set -euo pipefail
+          python -m pytest -q \
+            --junitxml=$(Build.ArtifactStagingDirectory)/test-results.xml \
+            --cov=app --cov-report=xml:$(Build.ArtifactStagingDirectory)/coverage.xml
+        displayName: Unit tests
+
+      # Publish even when tests fail -- a red build with no visible results is
+      # the most annoying thing a pipeline can do to you.
+      - task: PublishTestResults@2
+        condition: succeededOrFailed()
+        inputs:
+          testResultsFormat: JUnit
+          testResultsFiles: $(Build.ArtifactStagingDirectory)/test-results.xml
+          failTaskOnFailedTests: true
+
+      - task: PublishCodeCoverageResults@2
+        condition: succeededOrFailed()
+        inputs:
+          summaryFileLocation: $(Build.ArtifactStagingDirectory)/coverage.xml
+
+      - publish: $(Build.ArtifactStagingDirectory)
+        artifact: build-output

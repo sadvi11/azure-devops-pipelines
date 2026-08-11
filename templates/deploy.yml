@@ -1,0 +1,86 @@
+# Deployment job. Uses `environment:` rather than a plain job, which is what
+# gives Azure DevOps somewhere to attach approvals, branch controls and a
+# deployment history you can audit.
+parameters:
+  - name: environmentName
+    type: string
+  - name: resourceGroup
+    type: string
+  - name: azureSubscription
+    type: string        # service connection name (workload identity federation)
+  - name: imageName
+    type: string
+  - name: minReplicas
+    type: number
+    default: 0
+
+jobs:
+  - deployment: deploy
+    displayName: Deploy to ${{ parameters.environmentName }}
+    environment: ${{ parameters.environmentName }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - checkout: self
+
+            - task: AzureCLI@2
+              displayName: Build image in ACR
+              inputs:
+                # The service connection authenticates by federated token.
+                # There is no secret in this pipeline to leak or rotate.
+                azureSubscription: ${{ parameters.azureSubscription }}
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: |
+                  set -euo pipefail
+                  ACR_SERVER=$(az acr show -n "$(acrName)" --query loginServer -o tsv)
+                  az acr login --name "$(acrName)"
+                  docker build --platform linux/amd64 \
+                    -t "$ACR_SERVER/${{ parameters.imageName }}:$(Build.BuildId)" .
+                  docker push "$ACR_SERVER/${{ parameters.imageName }}:$(Build.BuildId)"
+
+            - task: AzureCLI@2
+              displayName: Deploy infrastructure (Bicep)
+              inputs:
+                azureSubscription: ${{ parameters.azureSubscription }}
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: |
+                  set -euo pipefail
+                  ACR_SERVER=$(az acr show -n "$(acrName)" --query loginServer -o tsv)
+                  az deployment group create \
+                    --resource-group ${{ parameters.resourceGroup }} \
+                    --template-file infra/main.bicep \
+                    --parameters \
+                      appName=${{ parameters.imageName }} \
+                      containerImage="$ACR_SERVER/${{ parameters.imageName }}:$(Build.BuildId)" \
+                      acrLoginServer="$ACR_SERVER" \
+                      minReplicas=${{ parameters.minReplicas }} \
+                    -o none
+
+            # A deploy is not done when the platform says Succeeded. It is done
+            # when the new revision is actually serving. This mirrors a real
+            # incident: a fix was deployed, the platform reported success, and
+            # the old revision served every request.
+            - task: AzureCLI@2
+              displayName: Verify the new revision is serving
+              inputs:
+                azureSubscription: ${{ parameters.azureSubscription }}
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: |
+                  set -euo pipefail
+                  RG=${{ parameters.resourceGroup }}
+                  APP=${{ parameters.imageName }}
+                  for i in $(seq 1 60); do
+                    state=$(az containerapp revision list -g "$RG" -n "$APP" \
+                      --query "[?properties.trafficWeight==\`100\`].properties.runningState | [0]" -o tsv)
+                    [ "$state" = "Running" ] && break
+                    sleep 10
+                  done
+                  [ "$state" = "Running" ] || { echo "##vso[task.logissue type=error]revision never reached Running"; exit 1; }
+                  FQDN=$(az containerapp show -g "$RG" -n "$APP" \
+                    --query properties.configuration.ingress.fqdn -o tsv)
+                  curl -fsS --retry 5 --retry-delay 5 "https://$FQDN/health"
+                  echo "Deployed and serving: https://$FQDN"

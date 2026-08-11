@@ -1,0 +1,6 @@
+# DELIBERATELY BAD: a security scan that cannot fail the build.
+jobs:
+  - job: scan
+    steps:
+      - script: checkov -d infra
+        continueOnError: true

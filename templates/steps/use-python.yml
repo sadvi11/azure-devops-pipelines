@@ -1,0 +1,12 @@
+# Pinned Python setup, extracted so a version bump is one edit rather than
+# a search across every template.
+parameters:
+  - name: pythonVersion
+    type: string
+
+steps:
+  - task: UsePythonVersion@0
+    displayName: Use Python ${{ parameters.pythonVersion }}
+    inputs:
+      versionSpec: ${{ parameters.pythonVersion }}
+      addToPath: true

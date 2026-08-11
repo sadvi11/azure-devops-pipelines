@@ -1,0 +1,40 @@
+# Security gates. Every one of these FAILS the build rather than warning.
+#
+# A scanner in warn-only mode produces a number that goes up quietly for two
+# years. If a finding is acceptable it should be suppressed explicitly, with a
+# reason, in the tool's own config -- not by ignoring the whole tool.
+parameters:
+  - name: pythonVersion
+    type: string
+    default: "3.11"
+
+jobs:
+  - job: scan
+    displayName: Dependency, secret and IaC scanning
+    steps:
+      - template: steps/use-python.yml
+        parameters:
+          pythonVersion: ${{ parameters.pythonVersion }}
+
+      - script: |
+          set -euo pipefail
+          pip install pip-audit checkov
+        displayName: Install scanners
+
+      - script: |
+          set -euo pipefail
+          pip-audit -r app/requirements.txt
+        displayName: Dependency vulnerabilities (fails the build)
+
+      - script: |
+          set -euo pipefail
+          checkov -d infra --framework bicep --compact
+        displayName: IaC misconfiguration (fails the build)
+
+      # Secret scanning runs against history, not just the working tree: a
+      # secret committed and then deleted is still a leaked secret.
+      - script: |
+          set -euo pipefail
+          docker run --rm -v "$(Build.SourcesDirectory):/repo" \
+            zricethezav/gitleaks:latest detect --source=/repo --no-banner --redact
+        displayName: Secret scanning across git history
