@@ -19,6 +19,34 @@ credentials anywhere**.
 > Every other repository in this portfolio proves its central claim by executing
 > it. This one cannot, so it says so rather than implying otherwise.
 
+
+## What it actually produces
+
+Real output from the [latest CI run](https://github.com/sadvi11/azure-devops-pipelines/actions):
+
+```console
+$ python3 scripts/validate_pipelines.py
+checked 5 pipeline file(s)
+all pipeline checks passed
+```
+
+**The validator is itself tested against deliberately broken pipelines**, so a
+check that stops detecting anything fails the build instead of quietly
+reporting success:
+
+```console
+$ python3 scripts/validate_pipelines.py tests/fixtures
+checked 2 pipeline file(s)
+FAIL: hardcoded credential in stage 'Deploy' (clientSecret)
+FAIL: production stage has no deployment gate
+```
+
+That second suite exists because the validator originally missed two of its
+own four test cases - `\b(secret)` does not match camelCase `clientSecret`,
+and the gate check only inspected top-level `jobs` rather than
+`stages[].jobs`. Both are fixed and both are now fixtures.
+
+
 ## Why an Azure-first shop cares
 
 Canadian banks, insurers and government run on Azure DevOps, frequently for a
